@@ -1,0 +1,7 @@
+- id: ui-html-output
+  disabled: true
+- insert:
+    - id: html-output-save
+      name: '@local/dsh-html-output-client-compat/save'
+    - id: ui-html-output-compat
+      name: '@local/dsh-html-output-client-compat'

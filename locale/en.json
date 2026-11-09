@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Chat HTML Preview Compatibility",
+    "description": "Renders fenced HTML replies as sandboxed previews in the chat."
+  }
+}

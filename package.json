@@ -1,0 +1,53 @@
+{
+  "name": "@local/dsh-html-output-client-compat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Compatible chat HTML preview renderer for DSH 0.2.x",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chajiuqqq/dsh-html-preview.git"
+  },
+  "scripts": {
+    "build": "node build.js",
+    "test": "node --test client-regression.test.mjs",
+    "check": "node --check client-source.js && node --check client.js && node --check save-host.js"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./save": "./save-host.js",
+    "./save/locale/*.json": "./locale/*.json",
+    "./save/icon": "./icon.svg",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "save-host.js",
+    "client.js",
+    "client-source.js",
+    "build.js",
+    "html2canvas-LICENSE",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ]
+    }
+  },
+  "dependencies": {
+    "html2canvas": "^1.4.1"
+  }
+}

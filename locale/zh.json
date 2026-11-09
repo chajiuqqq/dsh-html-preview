@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "聊天 HTML 预览兼容层",
+    "description": "在聊天中将 HTML 代码块显示为隔离的网页预览。"
+  }
+}
