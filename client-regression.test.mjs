@@ -86,6 +86,71 @@ test('SVG saver uses current scoped directory and policy without overwriting', a
   assert.equal(result.bytes, Buffer.byteLength(diagram));
   assert.match(DIAGRAM_PROMPT, /Use Markdown for ordinary answers/);
 });
+// The fallback surface reads fences straight from a Turn record.
+const sliceOf = (from, to) => clientSource.slice(clientSource.indexOf(from), clientSource.indexOf(to));
+const turnReader = new Function(sliceOf('    function splitPreviews', '    function inlineParts') + sliceOf('    function turnPreviewText', '    function InlineCard') + '; return { turnPreviewText, previewCards };')();
+const turnOf = text => ({ steps: [{ data: new Map([['assistant-step', { blocks: [{ kind: 'reasoning', text: 'thinking' }, { kind: 'text', text }] }]]) }] });
+
+test('the turn fallback finds every diagram and ignores other blocks', () => {
+  const cards = turnReader.previewCards(turnReader.turnPreviewText(turnOf('前文\n' + fenced('svg', diagram) + '\n中间\n' + fenced('html', '<h1>Page</h1>') + '\n后文')));
+  assert.deepEqual(cards.map(card => card.kind), ['svg', 'html']);
+  assert.equal(cards[0].html, diagram);
+  assert.equal(turnReader.previewCards(turnReader.turnPreviewText({ steps: [] })).length, 0);
+});
+
+
+// Exercise the real installer without emulating React or the DOM.
+const shadow = new Function(clientSource.slice(clientSource.indexOf('    function createShadowInstaller'), clientSource.indexOf('    function InlineCard')) + '; return createShadowInstaller;')();
+const Native = () => 'native';
+const Other = () => 'other';
+const shipped = { options: { key: 'assistant-step' }, component: Native, locale: 'chat', inject: () => ({}), children: { 'conversation.chat.message.images': { kind: 'single' } } };
+function stubSlots(entries) {
+  const registered = [];
+  return { registered, entriesOfSlot: () => entries, register: options => { registered.push(options); return () => {}; } };
+}
+
+test('an already registered assistant renderer is shadowed with its own binding', () => {
+  const slots = stubSlots([shipped]);
+  const component = () => null;
+  const installer = shadow(slots, component, 'conversation.chat.node', 'assistant-step');
+  installer.install();
+  assert.equal(slots.registered.length, 1);
+  assert.equal(slots.registered[0].locale, 'chat');
+  assert.equal(slots.registered[0].children, shipped.children);
+  assert.equal(installer.state.native, Native);
+  installer.stop();
+  assert.equal(installer.state.dispose, null);
+});
+test('a renderer that registers later is still shadowed without throwing', () => {
+  const slots = stubSlots([]);
+  const installer = shadow(slots, () => null, 'conversation.chat.node', 'assistant-step');
+  installer.install();
+  assert.equal(slots.registered.length, 0);
+  slots.entriesOfSlot = () => [shipped];
+  installer.install();
+  assert.equal(slots.registered.length, 1);
+  assert.equal(installer.state.native, Native);
+});
+test('a crashed entry is never re-registered and its own component is not shadowed again', () => {
+  const slots = stubSlots([shipped]);
+  const component = () => null;
+  const installer = shadow(slots, component, 'conversation.chat.node', 'assistant-step');
+  installer.install();
+  installer.install();
+  assert.equal(slots.registered.length, 1);
+  slots.entriesOfSlot = () => [{ options: { key: 'assistant-step' }, component }];
+  installer.install();
+  assert.equal(slots.registered.length, 1);
+});
+test('a later replacement of the assistant renderer is shadowed in turn', () => {
+  const slots = stubSlots([shipped]);
+  const installer = shadow(slots, () => null, 'conversation.chat.node', 'assistant-step');
+  installer.install();
+  slots.entriesOfSlot = () => [{ options: { key: 'assistant-step' }, component: Other }];
+  installer.install();
+  assert.equal(slots.registered.length, 2);
+  assert.equal(installer.state.native, Other);
+});
 
 
 // Exercise the real pure response decoder without emulating React or the DOM.

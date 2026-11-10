@@ -242,6 +242,47 @@ window.__ModuleLoader__.load({
           : h('iframe', { ref: frame, title, sandbox: 'allow-scripts allow-same-origin', src: frameSrc, style: { display: 'block', width: '100%', height: 420, border: 0, borderRadius: '0 0 10px 10px', background: '#fff' } }));
     });
 
+    // Shadow the shipped Assistant renderer, so previews land where their fences
+    // were and the native component keeps rendering every other block. The winner is
+    // re-read on each slot change instead of captured once: the shipped entry may
+    // register after this plugin, and a crashed entry must not be re-registered.
+    function createShadowInstaller(slots, component, slot, key) {
+      const state = { native: null, dispose: null, shadowed: null };
+      const install = () => {
+        const winner = slots.entriesOfSlot(slot).find(entry => entry.options.key === key);
+        if (!winner?.component || winner.component === component) return state;
+        if (state.dispose && winner.component === state.shadowed) return state;
+        state.dispose?.();
+        state.shadowed = winner.component;
+        state.native = winner.component;
+        state.dispose = slots.register({
+          name: slot, key, locale: winner.locale, inject: winner.inject, children: winner.children,
+        }, component);
+        return state;
+      };
+      return { state, install, stop: () => { state.dispose?.(); state.dispose = null; } };
+    }
+
+    // The fallback surface reads the same fences from the Turn record, so a page that
+    // cannot take the inline renderer still shows the cards instead of the source.
+    function turnPreviewText(turn) {
+      const parts = [];
+      for (const step of turn?.steps ?? []) {
+        const data = step?.data?.get?.('assistant-step');
+        if (!data) continue;
+        for (const block of data.blocks ?? []) {
+          if (block.kind === 'text' && typeof block.text === 'string') parts.push(block.text);
+        }
+      }
+      return parts.join('\n');
+    }
+
+    function previewCards(text) {
+      const cards = [];
+      for (const part of splitPreviews(text)) if (part.kind !== 'markdown') cards.push(part);
+      return cards;
+    }
+
     function InlineCard(props) {
       const error = React.useMemo(() => props.kind === 'svg' ? prepareSvg(props.html).error : null, [props.kind, props.html]);
       return h(React.Fragment, null,
@@ -253,30 +294,50 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'remote', 'remote.commands'],
       apply(ctx) {
         const saveHtml = (sessionId, input) => ctx.remote.commands.execute(sessionId, (input.format === 'svg' ? '/svg-output-save ' : '/html-output-save ') + JSON.stringify(input), []);
+        let installer = null;
+        // Reuse the shipped component and its scoped presentation/locale binding.
+        // Never mutate the registered entry or the recorded conversation payload.
+        const InlineAssistant = React.memo(function InlineAssistant(props) {
+          const { node, sessionId, groupPart } = props;
+          const NativeAssistant = installer?.state.native;
+          const parts = React.useMemo(() => inlineParts(node.data.blocks), [node.data.blocks]);
+          if (!NativeAssistant || groupPart === 'reasoning' || !parts.some(part => part.preview)) {
+            return NativeAssistant ? h(NativeAssistant, props) : null;
+          }
+          // Keep the native interruption indicator exactly once, after the reply.
+          const rows = node.data.status === 'interrupted' && parts.at(-1)?.preview
+            ? [...parts, { key: 'interrupted', blocks: [] }] : parts;
+          return h(React.Fragment, null, ...rows.map((part, index) => part.preview
+            ? h(InlineCard, { key: part.key, ...part.preview, sessionId, saveHtml })
+            : h(NativeAssistant, { ...props, key: part.key, node: { ...node, data: {
+              ...node.data, blocks: part.blocks,
+              status: index === rows.length - 1 ? node.data.status : 'settled',
+            } } })));
+        });
+        installer = createShadowInstaller(ctx.slots, InlineAssistant, 'conversation.chat.node', 'assistant-step');
+        const inPlace = () => ctx.slots.entriesOfSlot('conversation.chat.node')
+          .some(entry => entry.options.key === 'assistant-step' && entry.component === InlineAssistant);
+        // Fallback surface: the same cards before the Turn's action row, rendered only
+        // while the inline renderer is not the live assistant-step occupant. It also
+        // makes this Client half observable to read-only Slot inspection.
+        const FallbackPreview = React.memo(function FallbackPreview({ turn, sessionId }) {
+          if (inPlace()) return null;
+          const cards = previewCards(turnPreviewText(turn));
+          return cards.length
+            ? h(React.Fragment, null, ...cards.map(part => h(InlineCard, { key: part.offset, ...part, sessionId, saveHtml })))
+            : null;
+        });
+        ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+          name: 'conversation.chat.turnTail', id: 'html-output-preview-compat', order: 150,
+        }, FallbackPreview));
         ctx.slots.inject('conversation.chat.node', () => {
-          // Reuse the shipped component and its scoped presentation/locale binding.
-          // Never mutate the registered entry or the recorded conversation payload.
-          const original = ctx.slots.entriesOfSlot('conversation.chat.node').find(entry => entry.options.key === 'assistant-step');
-          if (!original?.component) throw new Error('DSH assistant renderer is unavailable');
-          const NativeAssistant = original.component;
-          const InlineAssistant = React.memo(function InlineAssistant(props) {
-            const { node, sessionId, groupPart } = props;
-            const parts = React.useMemo(() => inlineParts(node.data.blocks), [node.data.blocks]);
-            if (groupPart === 'reasoning' || !parts.some(part => part.preview)) return h(NativeAssistant, props);
-            // Keep the native interruption indicator exactly once, after the reply.
-            const rows = node.data.status === 'interrupted' && parts.at(-1)?.preview
-              ? [...parts, { key: 'interrupted', blocks: [] }] : parts;
-            return h(React.Fragment, null, ...rows.map((part, index) => part.preview
-              ? h(InlineCard, { key: part.key, ...part.preview, sessionId, saveHtml })
-              : h(NativeAssistant, { ...props, key: part.key, node: { ...node, data: {
-                ...node.data, blocks: part.blocks,
-                status: index === rows.length - 1 ? node.data.status : 'settled',
-              } } })));
+          installer.install();
+          // A slot change that cannot be shadowed must leave the shipped renderer
+          // untouched instead of failing this plugin.
+          const unsubscribe = ctx.slots.subscribe('conversation.chat.node', () => {
+            try { installer.install(); } catch { installer.stop(); }
           });
-          return ctx.slots.register({
-            name: 'conversation.chat.node', key: 'assistant-step', priority: -100,
-            locale: original.locale, inject: original.inject, children: original.children,
-          }, InlineAssistant);
+          return () => { unsubscribe(); installer.stop(); };
         });
       },
     };
