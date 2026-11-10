@@ -1,10 +1,10 @@
 # DSH SVG / HTML Preview
 
-DeepSeek Harness 聊天图表预览插件。将助手回复中每个完整的顶层 `svg` / `html` 代码块原位替换为预览卡片，保留前后文字顺序，支持同一条回复中的多张图表。
+DeepSeek Harness 聊天图表预览插件。将助手回复中的 `svg` / `html` 代码块原位替换为预览卡片，保留前后文字顺序，支持同一条回复中的多张图表。
 
 默认引导模型用 Markdown 回答普通问题，用独立 SVG 绘制流程图、架构图等静态图表；仅在用户要求网页或交互 HTML 时生成完整 HTML。
 
-目标运行环境：DSH `0.2.1-rc.5`。原有 HTML 预览和导出已人工验证；原位多图解析、后端保存和在线插件注册已验证，新版浏览器排版及 PNG 点击导出仍需人工验收。
+目标运行环境：DSH `0.2.1-rc.5`。HTML 预览与导出曾人工验证；图表识别、后端保存和在线插件注册已验证。原位卡片依赖宿主 DOM 标记，浏览器排版与 PNG 点击导出仍需人工验收。
 
 ## 功能
 
@@ -65,13 +65,13 @@ npm test
 
 修改 `client-source.js` 后执行构建，不要直接修改生成的 `client.js`。提交时同时更新生成文件。
 
-- `client-source.js`：代码块分段、正文原位预览、菜单及浏览器 PNG 渲染。
+- `client-source.js`：定位宿主代码块、原位卡片、菜单及浏览器 PNG 渲染。
 - `client.js`：内嵌 html2canvas 的构建产物，不依赖 CDN。
 - `save-host.js`：HTML / PNG 保存服务，遵循当前会话文件沙箱策略。
 - `svg-host.js`：SVG 优先提示词与 SVG 保存服务。
 - `build.js`：客户端打包脚本。
 - `cordis.patch.yml`：插件组合。
-- `client-regression.test.mjs`：代码块提取、保存参数、会话目录和接口响应解析的回归测试。
+- `client-regression.test.mjs`：图表识别、标题提取、宿主标记契约、保存参数、会话目录和接口响应解析的回归测试。
 
 ## 实现说明与限制
 
@@ -81,11 +81,11 @@ npm test
 - HTML 和 SVG 文本最大 2 MiB。PNG 限制为 2400 万像素和 20000 像素高度，并有 30 秒渲染超时。
 - html2canvas 对复杂 CSS、跨域图片、视频等存在限制；HTML 导出结果不等同于浏览器原生截图。
 - PNG 写入通过会话的 shell 沙箱执行，需要执行环境提供 `node` 命令。
-- 通过 `conversation.chat.node` 的 `assistant-step` 注册正文适配器，复用原有组件及其 locale / presentation 注入来渲染文字、思考和图片；不扫描或改写宿主 DOM。此适配器使用 DSH 0.2.1-rc.5 的 SlotRegistry entry 契约，升级 DSH 后应复核。
-- 注册不依赖加载顺序：安装器在每次插槽变化时重新读取当前生效的正文渲染器，只在它还不是本插件时才重新注册，因此原生组件先注册或后注册都能生效；插件自身渲染失败时不会被反复重注册，而是退回原生渲染。
-- 兜底：若原位遮蔽无法生效（例如正文渲染器被其他插件替换后本插件不再胜出），同样的卡片会在回合末尾显示，源码仍由原生渲染器保留。
-- 仅转换从行首开始的独立顶层围栏；支持反引号和波浪号围栏。引用、缩进代码和外层示例围栏保持源码；未闭合的流式代码块继续交给原生渲染器。
-- 图表前后的文字片段分别交给原生 Markdown 组件，跨片段引用式链接定义等 Markdown 上下文无法共享，建议使用普通内联链接。
+- 原位渲染通过宿主自己的代码块标记定位：`div.md-code-block` 内的 `[data-code-block-banner]`（语言）与 `[data-code-block-content] pre`（源码）。卡片插入该代码块之前，并隐藏代码块，因此文字顺序与原生 Markdown 完全一致。
+- 插件**不能**遮蔽 `conversation.chat.node` 的 `assistant-step` 渲染器：keyed 插槽要求同键条目使用不同优先级，而 `register` 在条目声明的子插槽已被声明时会抛出 `slot "…" is already declared`，正文渲染器正是 `reasoning.body` 与 `message.images` 的声明者。因此原位渲染必须直接操作 DOM，本机已安装的 `dsh-mermaid` 也采用同一做法。
+- 只有当 SVG 能完整解析时才替换代码块；流式过程中的半截 SVG 或无效 SVG 继续显示源码。HTML 无语法校验，按围栏语言直接替换。
+- 保存动作需要一个会话 ID，客户端只能从插槽条目的 props 获得，因此保留一个不渲染任何内容的 `turnTail` 条目（`html-output-preview-compat`）作为会话来源，并可用于只读插槽检查确认插件是否加载。
+- DOM 结构变化时卡片会重建（`MutationObserver` + 60ms 合并），代码块内容变化时卡片重建；插件卸载时移除卡片并恢复源码显示。DSH 升级后应复核上述标记。
 
 ## 第三方许可
 

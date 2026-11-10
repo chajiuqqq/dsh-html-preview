@@ -1,75 +1,11 @@
 window.__ModuleLoader__.load({
   id: '@local/dsh-html-output-client-compat',
-  factory(require) {
-    const React = require('react');
-    const h = React.createElement;
-    // Only standalone top-level fences are promoted. Other Markdown stays with
-    // the native renderer, including nested examples and unfinished stream tails.
-    function splitPreviews(text) {
-      const parts = [];
-      const lines = text.match(/[^\n]*\n|[^\n]+$/g) || [];
-      let offset = 0, start = 0, open = null;
-      for (const line of lines) {
-        const value = line.replace(/\r?\n$/, '');
-        if (!open) {
-          const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(value);
-          if (match && !(match[2][0] === '`' && match[3].includes('`'))) {
-            open = { marker: match[2][0], length: match[2].length,
-              language: match[3].trim().toLowerCase(), topLevel: match[1] === '',
-              start: offset, content: offset + line.length };
-          }
-        } else if (new RegExp('^ {0,3}' + open.marker + '{' + open.length + ',}[ \t]*$').test(value)) {
-          const html = text.slice(open.content, offset).trim();
-          if (open.topLevel && /^(html|svg)$/.test(open.language) && html) {
-            if (start < open.start) parts.push({ kind: 'markdown', text: text.slice(start, open.start), offset: start });
-            const kind = /^(?:<\?xml[^?]*\?>\s*)?<svg(?:\s|>)/i.test(html) ? 'svg' : open.language;
-            const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) ?? html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-            const title = titleMatch?.[1]?.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 80);
-            parts.push({ kind, html, title: title || (kind === 'svg' ? 'SVG 图表' : 'HTML 输出'), offset: open.start });
-            start = offset + line.length;
-          }
-          open = null;
-        }
-        offset += line.length;
-      }
-      if (start < text.length) parts.push({ kind: 'markdown', text: text.slice(start), offset: start });
-      return parts;
-    }
-
-    function inlineParts(blocks) {
-      const result = [];
-      let pending = [];
-      const flush = key => {
-        if (pending.length) result.push({ key, blocks: pending });
-        pending = [];
-      };
-      blocks.forEach((block, index) => {
-        if (block.kind !== 'text') { pending.push(block); return; }
-        for (const part of splitPreviews(block.text)) {
-          if (part.kind === 'markdown') pending.push({ ...block, text: part.text });
-          else {
-            flush(`before-${index}-${part.offset}`);
-            result.push({ key: `preview-${index}-${part.offset}`, preview: part });
-          }
-        }
-      });
-      flush('tail');
-      return result;
-    }
-
+  factory() {
     function documentSource(html) {
       if (/<!doctype\s+html/i.test(html) || /<html[\s>]/i.test(html)) return html;
       return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:16px;font:15px system-ui,sans-serif;line-height:1.5}</style></head><body>' + html + '</body></html>';
     }
 
-    const cardStyle = {
-      margin: '12px 0', border: '1px solid var(--dsw-border, rgba(128,128,128,.35))',
-      borderRadius: 10, overflow: 'hidden', background: 'var(--dsw-surface, rgba(128,128,128,.06))',
-    };
-    const barStyle = {
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-      padding: '7px 10px', borderBottom: '1px solid var(--dsw-border, rgba(128,128,128,.25))',
-    };
     function exportDocument(html) {
       const script = `
         window.addEventListener('message', async event => {
@@ -186,158 +122,178 @@ window.__ModuleLoader__.load({
       return result;
     }
 
-    const Card = React.memo(function Card({ html, kind, title, sessionId, saveHtml }) {
-      const isSvg = kind === 'svg';
-      const svg = React.useMemo(() => isSvg ? prepareSvg(html) : null, [html, isSvg]);
-      const [saving, setSaving] = React.useState(false);
-      const [notice, setNotice] = React.useState('');
-      const busy = React.useRef(false);
-      const frame = React.useRef(null);
-      const menu = React.useRef(null);
-      const controller = React.useRef(null);
-      React.useEffect(() => () => controller.current?.abort(), []);
-      // data: keeps the preview on a unique opaque origin, distinct from the app.
-      // allow-same-origin then lets html2canvas access its own inherited-origin
-      // about:blank clone. Never pair this permission with srcDoc or a host blob URL.
-      const frameSrc = React.useMemo(() => isSvg ? null : 'data:text/html;charset=utf-8,' + encodeURIComponent(exportDocument(html)), [html, isSvg]);
-      const save = async format => {
-        if (menu.current) menu.current.open = false;
-        if (busy.current) return;
-        busy.current = true;
-        controller.current = new AbortController();
-        setSaving(true);
-        setNotice('');
-        try {
-          if (isSvg && svg.error) throw new Error(svg.error);
-          const input = format === 'png'
-            ? { format, png: await (isSvg ? captureSvg(svg, controller.current.signal) : captureFrame(frame.current, controller.current.signal)), title }
-            : format === 'svg' ? { format, svg: svg.text, title }
-            : { format, html: documentSource(html), title };
-          const result = commandResult(await saveHtml(sessionId, input));
-          setNotice(`已保存：${result.text}`);
-        } catch (error) {
-          setNotice(`保存失败：${error instanceof Error ? error.message : String(error)}`);
-        } finally {
-          busy.current = false;
-          setSaving(false);
-        }
-      };
-      const itemStyle = { display: 'block', width: '100%', padding: '8px 14px', color: 'inherit', background: 'transparent', border: 0, textAlign: 'left', font: 'inherit', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' };
-      return h('section', { style: { ...cardStyle, overflow: 'visible' } },
-        h('header', { style: barStyle },
-          h('strong', { style: { fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
-          h('details', { ref: menu, style: { position: 'relative', flexShrink: 0 },
-            onKeyDown: event => { if (event.key === 'Escape') { menu.current.open = false; menu.current.querySelector('summary').focus(); } },
-            onBlur: event => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; } },
-            h('summary', { 'aria-label': '导出选项', title: '导出选项', style: { listStyle: 'none', cursor: 'pointer', padding: '0 8px', fontSize: 22, lineHeight: '28px' } }, '⋯'),
-            h('div', { style: { position: 'absolute', right: 0, top: '100%', zIndex: 10, minWidth: 150, borderRadius: 8, border: '1px solid currentColor', background: 'var(--dsw-alias-bg-base, Canvas)', color: 'var(--dsw-alias-text-primary, CanvasText)', padding: '4px 0' } },
-              h('button', { type: 'button', disabled: saving || !sessionId || Boolean(svg?.error), style: itemStyle, onClick: () => save(isSvg ? 'svg' : 'html') }, isSvg ? '保存为 SVG' : '保存为 HTML'),
-              h('button', { type: 'button', disabled: saving || !sessionId, style: itemStyle, onClick: () => save('png') }, '保存为 PNG')))),
-        (notice || saving) && h('div', { role: 'status', style: { padding: '6px 10px', fontSize: 12, overflowWrap: 'anywhere' } }, saving ? '正在保存…' : notice),
-        isSvg
-          ? svg.error
-            ? h('div', { role: 'alert', style: { padding: 16 } }, svg.error)
-            : h('img', { alt: title, src: svg.url, style: { display: 'block', width: '100%', height: 'auto', borderRadius: '0 0 10px 10px', background: '#fff' } })
-          : h('iframe', { ref: frame, title, sandbox: 'allow-scripts allow-same-origin', src: frameSrc, style: { display: 'block', width: '100%', height: 420, border: 0, borderRadius: '0 0 10px 10px', background: '#fff' } }));
-    });
-
-    // Shadow the shipped Assistant renderer, so previews land where their fences
-    // were and the native component keeps rendering every other block. The winner is
-    // re-read on each slot change instead of captured once: the shipped entry may
-    // register after this plugin, and a crashed entry must not be re-registered.
-    function createShadowInstaller(slots, component, slot, key) {
-      const state = { native: null, dispose: null, shadowed: null };
-      const install = () => {
-        const winner = slots.entriesOfSlot(slot).find(entry => entry.options.key === key);
-        if (!winner?.component || winner.component === component) return state;
-        if (state.dispose && winner.component === state.shadowed) return state;
-        state.dispose?.();
-        state.shadowed = winner.component;
-        state.native = winner.component;
-        state.dispose = slots.register({
-          name: slot, key, locale: winner.locale, inject: winner.inject, children: winner.children,
-        }, component);
-        return state;
-      };
-      return { state, install, stop: () => { state.dispose?.(); state.dispose = null; } };
+    // A code block becomes a preview when its fence says html/svg, or when it holds a
+    // standalone SVG whatever the fence said. Other code keeps its native rendering.
+    function previewKind(text, language) {
+      if (/^(?:<\?xml[^?]*\?>\s*)?<svg(?:\s|>)/i.test(text)) return 'svg';
+      return language === 'html' || language === 'svg' ? language : null;
     }
 
-    // The fallback surface reads the same fences from the Turn record, so a page that
-    // cannot take the inline renderer still shows the cards instead of the source.
-    function turnPreviewText(turn) {
-      const parts = [];
-      for (const step of turn?.steps ?? []) {
-        const data = step?.data?.get?.('assistant-step');
-        if (!data) continue;
-        for (const block of data.blocks ?? []) {
-          if (block.kind === 'text' && typeof block.text === 'string') parts.push(block.text);
-        }
+    function cardTitle(text, kind) {
+      const match = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i) ?? text.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+      const title = match?.[1]?.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      return title ? title.slice(0, 80) : kind === 'svg' ? 'SVG 图表' : 'HTML 输出';
+    }
+
+    const CARD_STYLE = 'margin:12px 0;border:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.35));border-radius:10px;overflow:visible;background:var(--dsw-alias-bg-base, rgba(128,128,128,.05))';
+    const BAR_STYLE = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.25))';
+    const ITEM_STYLE = 'display:block;width:100%;padding:8px 14px;color:inherit;background:transparent;border:0;text-align:left;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap';
+
+    // The card is plain DOM: the Markdown renderer owns the block it replaces, and a
+    // plugin cannot shadow that renderer (a keyed entry may not redeclare the child
+    // slots the shipped entry owns), so the card is inserted beside the block.
+    function buildCard(preview, svg, save) {
+      const section = document.createElement('section');
+      section.className = 'dsh-html-preview';
+      section.dataset.htmlPreview = preview.kind;
+      section.style.cssText = CARD_STYLE;
+
+      const header = document.createElement('header');
+      header.style.cssText = BAR_STYLE;
+      const title = document.createElement('strong');
+      title.style.cssText = 'font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      title.textContent = preview.title;
+      const menu = document.createElement('details');
+      menu.style.cssText = 'position:relative;flex:none';
+      const summary = document.createElement('summary');
+      summary.textContent = '⋯';
+      summary.title = '导出选项';
+      summary.setAttribute('aria-label', '导出选项');
+      summary.style.cssText = 'list-style:none;cursor:pointer;padding:0 8px;font-size:22px;line-height:28px';
+      const items = document.createElement('div');
+      items.style.cssText = 'position:absolute;right:0;top:100%;z-index:10;min-width:150px;border-radius:8px;border:1px solid currentColor;background:var(--dsw-alias-bg-base, Canvas);color:var(--dsw-alias-text-primary, CanvasText);padding:4px 0';
+      const status = document.createElement('div');
+      status.hidden = true;
+      status.setAttribute('role', 'status');
+      status.style.cssText = 'padding:6px 10px;font-size:12px;overflow-wrap:anywhere';
+
+      let frame = null;
+      let busy = false;
+      const report = message => {
+        status.hidden = false;
+        status.textContent = message;
+      };
+      const action = (label, format) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.style.cssText = ITEM_STYLE;
+        button.addEventListener('click', async () => {
+          menu.open = false;
+          if (busy) return;
+          busy = true;
+          report('正在保存…');
+          try { report(`已保存：${await save(preview, format, svg, frame)}`); }
+          catch (error) { report(`保存失败：${error instanceof Error ? error.message : String(error)}`); }
+          finally { busy = false; }
+        });
+        return button;
+      };
+      const first = action(preview.kind === 'svg' ? '保存为 SVG' : '保存为 HTML', preview.kind);
+      const png = action('保存为 PNG', 'png');
+      if (svg?.error) first.disabled = png.disabled = true;
+      items.append(first, png);
+      menu.append(summary, items);
+      header.append(title, menu);
+      section.append(header, status);
+      if (svg && !svg.error) {
+        const image = document.createElement('img');
+        image.alt = preview.title;
+        image.src = svg.url;
+        image.style.cssText = 'display:block;width:100%;height:auto;border-radius:0 0 10px 10px;background:#fff';
+        section.append(image);
+      } else if (svg) {
+        report(svg.error);
+      } else {
+        frame = document.createElement('iframe');
+        frame.title = preview.title;
+        frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+        frame.src = 'data:text/html;charset=utf-8,' + encodeURIComponent(exportDocument(preview.html));
+        frame.style.cssText = 'display:block;width:100%;height:420px;border:0;border-radius:0 0 10px 10px;background:#fff';
+        section.append(frame);
       }
-      return parts.join('\n');
-    }
-
-    function previewCards(text) {
-      const cards = [];
-      for (const part of splitPreviews(text)) if (part.kind !== 'markdown') cards.push(part);
-      return cards;
-    }
-
-    function InlineCard(props) {
-      const error = React.useMemo(() => props.kind === 'svg' ? prepareSvg(props.html).error : null, [props.kind, props.html]);
-      return h(React.Fragment, null,
-        h(Card, props),
-        error ? h('pre', { style: { overflow: 'auto', whiteSpace: 'pre-wrap' } }, props.html) : null);
+      return section;
     }
 
     return {
       inject: ['slots', 'remote', 'remote.commands'],
       apply(ctx) {
         const saveHtml = (sessionId, input) => ctx.remote.commands.execute(sessionId, (input.format === 'svg' ? '/svg-output-save ' : '/html-output-save ') + JSON.stringify(input), []);
-        let installer = null;
-        // Reuse the shipped component and its scoped presentation/locale binding.
-        // Never mutate the registered entry or the recorded conversation payload.
-        const InlineAssistant = React.memo(function InlineAssistant(props) {
-          const { node, sessionId, groupPart } = props;
-          const NativeAssistant = installer?.state.native;
-          const parts = React.useMemo(() => inlineParts(node.data.blocks), [node.data.blocks]);
-          if (!NativeAssistant || groupPart === 'reasoning' || !parts.some(part => part.preview)) {
-            return NativeAssistant ? h(NativeAssistant, props) : null;
+        // The save command is addressed to the viewed Session. A Client half learns it
+        // from a Slot entry's props, so this inert entry carries it and nothing else.
+        const session = { id: '' };
+        const save = async (preview, format, svg, frame) => {
+          if (!session.id) throw new Error('会话尚未就绪，请稍后重试');
+          const controller = new AbortController();
+          const input = format === 'png'
+            ? { format, png: preview.kind === 'svg' ? await captureSvg(svg, controller.signal) : await captureFrame(frame, controller.signal), title: preview.title }
+            : preview.kind === 'svg'
+              ? { format, svg: svg.text, title: preview.title }
+              : { format, html: documentSource(preview.html), title: preview.title };
+          const result = commandResult(await saveHtml(session.id, input));
+          return result.text;
+        };
+        // In place: every assistant code block that holds a diagram becomes a card at
+        // its own position. The block stays as the source whenever the card cannot
+        // render it, so nothing the model wrote is lost.
+        const registry = new Map();
+        const scan = () => {
+          const live = new Set();
+          for (const block of document.querySelectorAll('.md-code-block')) {
+            const content = block.querySelector('[data-code-block-content] pre');
+            const text = (content?.textContent ?? '').trim();
+            if (!text) continue;
+            const banner = block.querySelector('[data-code-block-banner]');
+            const language = (banner?.firstElementChild?.textContent ?? '').trim().toLowerCase();
+            const kind = previewKind(text, language);
+            if (!kind) continue;
+            const svg = kind === 'svg' ? prepareSvg(text) : null;
+            // An unfinished or invalid SVG keeps its source; the card appears once it parses.
+            if (svg?.error) continue;
+            const current = registry.get(block);
+            if (current?.card.isConnected && current.text === text) { live.add(block); continue; }
+            current?.card.remove();
+            const card = buildCard({ kind, html: text, title: cardTitle(text, kind) }, svg, save);
+            block.parentNode?.insertBefore(card, block);
+            block.hidden = true;
+            block.style.display = 'none';
+            registry.set(block, { card, text });
+            live.add(block);
           }
-          // Keep the native interruption indicator exactly once, after the reply.
-          const rows = node.data.status === 'interrupted' && parts.at(-1)?.preview
-            ? [...parts, { key: 'interrupted', blocks: [] }] : parts;
-          return h(React.Fragment, null, ...rows.map((part, index) => part.preview
-            ? h(InlineCard, { key: part.key, ...part.preview, sessionId, saveHtml })
-            : h(NativeAssistant, { ...props, key: part.key, node: { ...node, data: {
-              ...node.data, blocks: part.blocks,
-              status: index === rows.length - 1 ? node.data.status : 'settled',
-            } } })));
-        });
-        installer = createShadowInstaller(ctx.slots, InlineAssistant, 'conversation.chat.node', 'assistant-step');
-        const inPlace = () => ctx.slots.entriesOfSlot('conversation.chat.node')
-          .some(entry => entry.options.key === 'assistant-step' && entry.component === InlineAssistant);
-        // Fallback surface: the same cards before the Turn's action row, rendered only
-        // while the inline renderer is not the live assistant-step occupant. It also
-        // makes this Client half observable to read-only Slot inspection.
-        const FallbackPreview = React.memo(function FallbackPreview({ turn, sessionId }) {
-          if (inPlace()) return null;
-          const cards = previewCards(turnPreviewText(turn));
-          return cards.length
-            ? h(React.Fragment, null, ...cards.map(part => h(InlineCard, { key: part.offset, ...part, sessionId, saveHtml })))
-            : null;
-        });
+          for (const [block, entry] of registry) {
+            if (live.has(block)) continue;
+            entry.card.remove();
+            block.hidden = false;
+            block.style.display = '';
+            registry.delete(block);
+          }
+        };
+        ctx.effect(() => {
+          let timer = null;
+          const schedule = () => {
+            if (!timer) timer = setTimeout(() => { timer = null; scan(); }, 60);
+          };
+          const observer = new MutationObserver(schedule);
+          observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+          scan();
+          return () => {
+            observer.disconnect();
+            if (timer) clearTimeout(timer);
+            for (const [block, entry] of registry) {
+              entry.card.remove();
+              block.hidden = false;
+              block.style.display = '';
+            }
+            registry.clear();
+          };
+        }, 'dsh-html-output-client-compat: inline previews');
+        const SessionProbe = function SessionProbe({ sessionId }) {
+          session.id = sessionId;
+          return null;
+        };
         ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
           name: 'conversation.chat.turnTail', id: 'html-output-preview-compat', order: 150,
-        }, FallbackPreview));
-        ctx.slots.inject('conversation.chat.node', () => {
-          installer.install();
-          // A slot change that cannot be shadowed must leave the shipped renderer
-          // untouched instead of failing this plugin.
-          const unsubscribe = ctx.slots.subscribe('conversation.chat.node', () => {
-            try { installer.install(); } catch { installer.stop(); }
-          });
-          return () => { unsubscribe(); installer.stop(); };
-        });
+        }, SessionProbe));
       },
     };
   },
