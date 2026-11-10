@@ -1,10 +1,10 @@
 # DSH SVG / HTML Preview
 
-DeepSeek Harness 聊天图表预览插件。直接展示助手回复中最后一个完整的 `svg` 或 `html` 代码块，并隐藏对应源码。
+DeepSeek Harness 聊天图表预览插件。将助手回复中每个完整的顶层 `svg` / `html` 代码块原位替换为预览卡片，保留前后文字顺序，支持同一条回复中的多张图表。
 
 默认引导模型用 Markdown 回答普通问题，用独立 SVG 绘制流程图、架构图等静态图表；仅在用户要求网页或交互 HTML 时生成完整 HTML。
 
-目标运行环境：DSH `0.2.1-rc.5`。HTML 预览和导出已人工验证；SVG 的代码块解析、后端保存和在线插件注册已验证，浏览器展示及 PNG 点击导出仍需人工验收。
+目标运行环境：DSH `0.2.1-rc.5`。原有 HTML 预览和导出已人工验证；原位多图解析、后端保存和在线插件注册已验证，新版浏览器排版及 PNG 点击导出仍需人工验收。
 
 ## 功能
 
@@ -65,7 +65,7 @@ npm test
 
 修改 `client-source.js` 后执行构建，不要直接修改生成的 `client.js`。提交时同时更新生成文件。
 
-- `client-source.js`：代码块提取、预览、源码隐藏、菜单及浏览器 PNG 渲染。
+- `client-source.js`：代码块分段、正文原位预览、菜单及浏览器 PNG 渲染。
 - `client.js`：内嵌 html2canvas 的构建产物，不依赖 CDN。
 - `save-host.js`：HTML / PNG 保存服务，遵循当前会话文件沙箱策略。
 - `svg-host.js`：SVG 优先提示词与 SVG 保存服务。
@@ -81,7 +81,9 @@ npm test
 - HTML 和 SVG 文本最大 2 MiB。PNG 限制为 2400 万像素和 20000 像素高度，并有 30 秒渲染超时。
 - html2canvas 对复杂 CSS、跨域图片、视频等存在限制；HTML 导出结果不等同于浏览器原生截图。
 - PNG 写入通过会话的 shell 沙箱执行，需要执行环境提供 `node` 命令。
-- 当前每个回合只预览最后一个完整的 SVG / HTML 代码块。源码隐藏依赖当前 DSH 聊天 DOM 结构，升级 DSH 后应复核。
+- 通过 `conversation.chat.node` 的 `assistant-step` 注册正文适配器，复用原有组件及其 locale / presentation 注入来渲染文字、思考和图片；不再挂载 turnTail，不扫描或改写宿主 DOM。此适配器使用 DSH 0.2.1-rc.5 的 SlotRegistry entry 契约，升级 DSH 后应复核。
+- 仅转换从行首开始的独立顶层围栏；支持反引号和波浪号围栏。引用、缩进代码和外层示例围栏保持源码；未闭合的流式代码块继续交给原生渲染器。
+- 图表前后的文字片段分别交给原生 Markdown 组件，跨片段引用式链接定义等 Markdown 上下文无法共享，建议使用普通内联链接。
 
 ## 第三方许可
 

@@ -3,39 +3,58 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const fence = /```(html|svg)[^\r\n]*\r?\n([\s\S]*?)\r?\n```(?=[ \t]*(?:\r?\n|$))/gi;
-
-    function assistantText(turn) {
+    // Only standalone top-level fences are promoted. Other Markdown stays with
+    // the native renderer, including nested examples and unfinished stream tails.
+    function splitPreviews(text) {
       const parts = [];
-      for (const step of turn?.steps ?? []) {
-        const data = step?.data?.get?.('assistant-step');
-        if (!data) continue;
-        for (const block of data.blocks ?? []) {
-          if (block.kind === 'text' && typeof block.text === 'string') parts.push(block.text);
+      const lines = text.match(/[^\n]*\n|[^\n]+$/g) || [];
+      let offset = 0, start = 0, open = null;
+      for (const line of lines) {
+        const value = line.replace(/\r?\n$/, '');
+        if (!open) {
+          const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(value);
+          if (match && !(match[2][0] === '`' && match[3].includes('`'))) {
+            open = { marker: match[2][0], length: match[2].length,
+              language: match[3].trim().toLowerCase(), topLevel: match[1] === '',
+              start: offset, content: offset + line.length };
+          }
+        } else if (new RegExp('^ {0,3}' + open.marker + '{' + open.length + ',}[ \t]*$').test(value)) {
+          const html = text.slice(open.content, offset).trim();
+          if (open.topLevel && /^(html|svg)$/.test(open.language) && html) {
+            if (start < open.start) parts.push({ kind: 'markdown', text: text.slice(start, open.start), offset: start });
+            const kind = /^(?:<\?xml[^?]*\?>\s*)?<svg(?:\s|>)/i.test(html) ? 'svg' : open.language;
+            const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) ?? html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+            const title = titleMatch?.[1]?.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 80);
+            parts.push({ kind, html, title: title || (kind === 'svg' ? 'SVG 图表' : 'HTML 输出'), offset: open.start });
+            start = offset + line.length;
+          }
+          open = null;
         }
+        offset += line.length;
       }
-      return parts.join('\n');
+      if (start < text.length) parts.push({ kind: 'markdown', text: text.slice(start), offset: start });
+      return parts;
     }
 
-    function extract(owner) {
-      const text = assistantText(owner?.turn ?? {});
-      fence.lastIndex = 0;
-      let match;
-      let html = null;
-      let kind = 'html';
-      while ((match = fence.exec(text)) !== null) {
-        const value = (match[2] ?? '').trim();
-        if (value) {
-          html = value;
-          kind = match[1].toLowerCase();
-          if (/^(?:<\?xml[^?]*\?>\s*)?<svg(?:\s|>)/i.test(value)) kind = 'svg';
+    function inlineParts(blocks) {
+      const result = [];
+      let pending = [];
+      const flush = key => {
+        if (pending.length) result.push({ key, blocks: pending });
+        pending = [];
+      };
+      blocks.forEach((block, index) => {
+        if (block.kind !== 'text') { pending.push(block); return; }
+        for (const part of splitPreviews(block.text)) {
+          if (part.kind === 'markdown') pending.push({ ...block, text: part.text });
+          else {
+            flush(`before-${index}-${part.offset}`);
+            result.push({ key: `preview-${index}-${part.offset}`, preview: part });
+          }
         }
-      }
-      if (!html) return null;
-      const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
-        ?? html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-      const title = titleMatch?.[1]?.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-      return { html, kind, ...(title ? { title: title.slice(0, 80) } : {}) };
+      });
+      flush('tail');
+      return result;
     }
 
     function documentSource(html) {
@@ -51,50 +70,6 @@ window.__ModuleLoader__.load({
       display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
       padding: '7px 10px', borderBottom: '1px solid var(--dsw-border, rgba(128,128,128,.25))',
     };
-    // Read only the current turn's rendered code blocks. Styles remain owned by
-    // this component and disappear on unmount; message data and DOM are untouched.
-    function useSourceSuppression(ref, html, previewId) {
-      const [css, setCss] = React.useState('');
-      React.useEffect(() => {
-        const tail = ref.current?.closest('[data-chat-flow-kind="turn-tail"]');
-        const root = tail?.parentElement;
-        if (!root) return;
-        let frame = 0;
-        const refresh = () => {
-          frame = 0;
-          const rules = [];
-          const scope = `:has(> [data-chat-flow-kind="turn-tail"] [data-html-preview-id="${CSS.escape(previewId)}"])`;
-          for (const flow of root.children) {
-            if (flow.dataset.chatFlowKind !== 'assistant-step' || flow.dataset.chatTurn !== tail.dataset.chatTurn) continue;
-            for (const block of flow.querySelectorAll('.md-code-block')) {
-              const code = block.querySelector('[data-code-block-content] pre');
-              if (!code || code.textContent.trim() !== html.trim()) continue;
-              let path = '';
-              let node = block;
-              while (node && node !== flow) {
-                const index = Array.prototype.indexOf.call(node.parentElement.children, node) + 1;
-                path = ` > :nth-child(${index})` + path;
-                node = node.parentElement;
-              }
-              if (node === flow) rules.push(`${scope} > [data-chat-node-key="${CSS.escape(flow.dataset.chatNodeKey)}"]${path}{display:none!important}`);
-            }
-          }
-          const next = rules.join('\n');
-          setCss(previous => previous === next ? previous : next);
-        };
-        const observer = new MutationObserver(() => {
-          if (!frame) frame = requestAnimationFrame(refresh);
-        });
-        observer.observe(root, { childList: true, subtree: true, characterData: true });
-        refresh();
-        return () => {
-          observer.disconnect();
-          if (frame) cancelAnimationFrame(frame);
-        };
-      }, [html, previewId]);
-      return css;
-    }
-
     function exportDocument(html) {
       const script = `
         window.addEventListener('message', async event => {
@@ -247,12 +222,8 @@ window.__ModuleLoader__.load({
           setSaving(false);
         }
       };
-      const ref = React.useRef(null);
-      const previewId = React.useId();
-      const css = useSourceSuppression(ref, svg?.error ? '' : html, previewId);
       const itemStyle = { display: 'block', width: '100%', padding: '8px 14px', color: 'inherit', background: 'transparent', border: 0, textAlign: 'left', font: 'inherit', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' };
-      return h('section', { ref, style: { ...cardStyle, overflow: 'visible' }, 'data-html-preview-id': previewId },
-        h('style', null, css),
+      return h('section', { style: { ...cardStyle, overflow: 'visible' } },
         h('header', { style: barStyle },
           h('strong', { style: { fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title),
           h('details', { ref: menu, style: { position: 'relative', flexShrink: 0 },
@@ -270,21 +241,42 @@ window.__ModuleLoader__.load({
           : h('iframe', { ref: frame, title, sandbox: 'allow-scripts allow-same-origin', src: frameSrc, style: { display: 'block', width: '100%', height: 420, border: 0, borderRadius: '0 0 10px 10px', background: '#fff' } }));
     });
 
-    const Preview = React.memo(function Preview({ turn, sessionId, saveHtml }) {
-      const matched = extract({ turn });
-      return matched ? h(Card, { html: matched.html, kind: matched.kind, title: matched.title || (matched.kind === 'svg' ? 'SVG 图表' : 'HTML 输出'), sessionId, saveHtml }) : null;
-    });
+    function InlineCard(props) {
+      const error = React.useMemo(() => props.kind === 'svg' ? prepareSvg(props.html).error : null, [props.kind, props.html]);
+      return h(React.Fragment, null,
+        h(Card, props),
+        error ? h('pre', { style: { overflow: 'auto', whiteSpace: 'pre-wrap' } }, props.html) : null);
+    }
 
     return {
       inject: ['slots', 'remote', 'remote.commands'],
       apply(ctx) {
         const saveHtml = (sessionId, input) => ctx.remote.commands.execute(sessionId, (input.format === 'svg' ? '/svg-output-save ' : '/html-output-save ') + JSON.stringify(input), []);
-        const ConnectedPreview = props => h(Preview, { ...props, saveHtml });
-        ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
-          name: 'conversation.chat.turnTail',
-          id: 'html-output-preview-compat',
-          order: 150,
-        }, ConnectedPreview));
+        ctx.slots.inject('conversation.chat.node', () => {
+          // Reuse the shipped component and its scoped presentation/locale binding.
+          // Never mutate the registered entry or the recorded conversation payload.
+          const original = ctx.slots.entriesOfSlot('conversation.chat.node').find(entry => entry.options.key === 'assistant-step');
+          if (!original?.component) throw new Error('DSH assistant renderer is unavailable');
+          const NativeAssistant = original.component;
+          const InlineAssistant = React.memo(function InlineAssistant(props) {
+            const { node, sessionId, groupPart } = props;
+            const parts = React.useMemo(() => inlineParts(node.data.blocks), [node.data.blocks]);
+            if (groupPart === 'reasoning' || !parts.some(part => part.preview)) return h(NativeAssistant, props);
+            // Keep the native interruption indicator exactly once, after the reply.
+            const rows = node.data.status === 'interrupted' && parts.at(-1)?.preview
+              ? [...parts, { key: 'interrupted', blocks: [] }] : parts;
+            return h(React.Fragment, null, ...rows.map((part, index) => part.preview
+              ? h(InlineCard, { key: part.key, ...part.preview, sessionId, saveHtml })
+              : h(NativeAssistant, { ...props, key: part.key, node: { ...node, data: {
+                ...node.data, blocks: part.blocks,
+                status: index === rows.length - 1 ? node.data.status : 'settled',
+              } } })));
+          });
+          return ctx.slots.register({
+            name: 'conversation.chat.node', key: 'assistant-step', priority: -100,
+            locale: original.locale, inject: original.inject, children: original.children,
+          }, InlineAssistant);
+        });
       },
     };
   },
