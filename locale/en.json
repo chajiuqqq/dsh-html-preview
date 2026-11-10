@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Chat HTML Preview Compatibility",
-    "description": "Renders fenced HTML replies as sandboxed previews in the chat."
+    "title": "Chat SVG and HTML Preview",
+    "description": "Displays SVG diagrams and HTML cards with vector and PNG export; defaults to Markdown and SVG."
   }
 }

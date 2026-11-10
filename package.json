@@ -2,7 +2,7 @@
   "name": "@local/dsh-html-output-client-compat",
   "version": "1.0.0",
   "private": true,
-  "description": "Compatible chat HTML preview renderer for DSH 0.2.x",
+  "description": "Chat SVG and HTML previews with vector and PNG export for DSH 0.2.x",
   "type": "module",
   "repository": {
     "type": "git",
@@ -11,10 +11,13 @@
   "scripts": {
     "build": "node build.js",
     "test": "node --test client-regression.test.mjs",
-    "check": "node --check client-source.js && node --check client.js && node --check save-host.js"
+    "check": "node --check client-source.js && node --check client.js && node --check save-host.js && node --check svg-host.js"
   },
   "exports": {
     ".": "./index.js",
+    "./svg": "./svg-host.js",
+    "./svg/locale/*.json": "./locale/*.json",
+    "./svg/icon": "./icon.svg",
     "./save": "./save-host.js",
     "./save/locale/*.json": "./locale/*.json",
     "./save/icon": "./icon.svg",
@@ -25,6 +28,7 @@
   "files": [
     "index.js",
     "save-host.js",
+    "svg-host.js",
     "client.js",
     "client-source.js",
     "build.js",

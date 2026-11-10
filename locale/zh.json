@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "聊天 HTML 预览兼容层",
-    "description": "在聊天中将 HTML 代码块显示为隔离的网页预览。"
+    "title": "聊天 SVG 与 HTML 预览",
+    "description": "直接展示 SVG 图表和 HTML 卡片，支持矢量文件与 PNG 导出；默认使用 Markdown 和 SVG。"
   }
 }

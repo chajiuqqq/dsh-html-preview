@@ -1,6 +1,10 @@
+- id: html-output
+  disabled: true
 - id: ui-html-output
   disabled: true
 - insert:
+    - id: svg-output
+      name: '@local/dsh-html-output-client-compat/svg'
     - id: html-output-save
       name: '@local/dsh-html-output-client-compat/save'
     - id: ui-html-output-compat

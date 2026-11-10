@@ -3,7 +3,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const fence = /```html[^\r\n]*\r?\n([\s\S]*?)\r?\n```(?=[ \t]*(?:\r?\n|$))/g;
+    const fence = /```(html|svg)[^\r\n]*\r?\n([\s\S]*?)\r?\n```(?=[ \t]*(?:\r?\n|$))/gi;
 
     function assistantText(turn) {
       const parts = [];
@@ -22,15 +22,20 @@ window.__ModuleLoader__.load({
       fence.lastIndex = 0;
       let match;
       let html = null;
+      let kind = 'html';
       while ((match = fence.exec(text)) !== null) {
-        const value = (match[1] ?? '').trim();
-        if (value) html = value;
+        const value = (match[2] ?? '').trim();
+        if (value) {
+          html = value;
+          kind = match[1].toLowerCase();
+          if (/^(?:<\?xml[^?]*\?>\s*)?<svg(?:\s|>)/i.test(value)) kind = 'svg';
+        }
       }
       if (!html) return null;
       const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
         ?? html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
       const title = titleMatch?.[1]?.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-      return { html, ...(title ? { title: title.slice(0, 80) } : {}) };
+      return { html, kind, ...(title ? { title: title.slice(0, 80) } : {}) };
     }
 
     function documentSource(html) {
@@ -138,6 +143,66 @@ window.__ModuleLoader__.load({
       });
     }
 
+    function prepareSvg(source) {
+      try {
+        const doc = new DOMParser().parseFromString(source, 'image/svg+xml');
+        const svg = doc.documentElement;
+        if (doc.querySelector('parsererror') || svg.localName !== 'svg') throw new Error('SVG 格式无效，请检查标签和 XML 转义');
+        const box = (svg.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+        const dimension = name => {
+          const value = svg.getAttribute(name) || '';
+          return /^\d+(?:\.\d+)?(?:px)?$/.test(value) ? parseFloat(value) : 0;
+        };
+        const hasBox = box.length === 4 && box.every(Number.isFinite) && box[2] > 0 && box[3] > 0;
+        const width = hasBox ? box[2] : dimension('width') || 800;
+        const height = hasBox ? box[3] : dimension('height') || 450;
+        svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        if (!hasBox) svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+        svg.setAttribute('width', String(width));
+        svg.setAttribute('height', String(height));
+        const text = new XMLSerializer().serializeToString(svg);
+        return { text, url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(text), width, height };
+      } catch (error) {
+        return { error: error.message || String(error) };
+      }
+    }
+
+    function captureSvg(svg, signal) {
+      return new Promise((resolve, reject) => {
+        if (svg.error) return reject(new Error(svg.error));
+        const width = Math.ceil(Math.min(1600, Math.max(600, svg.width)));
+        const height = Math.ceil(width * svg.height / svg.width);
+        if (width * height > 24000000 || height > 20000) return reject(new Error('图表过大，无法导出 PNG'));
+        const image = new Image();
+        const finish = (error, value) => {
+          clearTimeout(timer);
+          signal.removeEventListener('abort', abort);
+          image.onload = image.onerror = null;
+          image.src = '';
+          error ? reject(error) : resolve(value);
+        };
+        const abort = () => finish(new Error('导出已取消'));
+        const timer = setTimeout(() => finish(new Error('SVG 渲染超时')), 30000);
+        image.onload = () => {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const context = canvas.getContext('2d');
+            if (!context) throw new Error('浏览器不支持 Canvas 导出');
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, width, height);
+            context.drawImage(image, 0, 0, width, height);
+            finish(null, canvas.toDataURL('image/png'));
+          } catch (error) { finish(error); }
+        };
+        image.onerror = () => finish(new Error('SVG 图片加载失败，请使用自包含 SVG'));
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) return abort();
+        image.src = svg.url;
+      });
+    }
+
     function commandResult(response) {
       if (!response?.ok) throw new Error(response?.error?.message || '保存请求失败');
       const result = response.value?.result;
@@ -146,7 +211,9 @@ window.__ModuleLoader__.load({
       return result;
     }
 
-    const Card = React.memo(function Card({ html, title, sessionId, saveHtml }) {
+    const Card = React.memo(function Card({ html, kind, title, sessionId, saveHtml }) {
+      const isSvg = kind === 'svg';
+      const svg = React.useMemo(() => isSvg ? prepareSvg(html) : null, [html, isSvg]);
       const [saving, setSaving] = React.useState(false);
       const [notice, setNotice] = React.useState('');
       const busy = React.useRef(false);
@@ -157,7 +224,7 @@ window.__ModuleLoader__.load({
       // data: keeps the preview on a unique opaque origin, distinct from the app.
       // allow-same-origin then lets html2canvas access its own inherited-origin
       // about:blank clone. Never pair this permission with srcDoc or a host blob URL.
-      const frameSrc = React.useMemo(() => 'data:text/html;charset=utf-8,' + encodeURIComponent(exportDocument(html)), [html]);
+      const frameSrc = React.useMemo(() => isSvg ? null : 'data:text/html;charset=utf-8,' + encodeURIComponent(exportDocument(html)), [html, isSvg]);
       const save = async format => {
         if (menu.current) menu.current.open = false;
         if (busy.current) return;
@@ -166,8 +233,10 @@ window.__ModuleLoader__.load({
         setSaving(true);
         setNotice('');
         try {
+          if (isSvg && svg.error) throw new Error(svg.error);
           const input = format === 'png'
-            ? { format, png: await captureFrame(frame.current, controller.current.signal), title }
+            ? { format, png: await (isSvg ? captureSvg(svg, controller.current.signal) : captureFrame(frame.current, controller.current.signal)), title }
+            : format === 'svg' ? { format, svg: svg.text, title }
             : { format, html: documentSource(html), title };
           const result = commandResult(await saveHtml(sessionId, input));
           setNotice(`已保存：${result.text}`);
@@ -180,7 +249,7 @@ window.__ModuleLoader__.load({
       };
       const ref = React.useRef(null);
       const previewId = React.useId();
-      const css = useSourceSuppression(ref, html, previewId);
+      const css = useSourceSuppression(ref, svg?.error ? '' : html, previewId);
       const itemStyle = { display: 'block', width: '100%', padding: '8px 14px', color: 'inherit', background: 'transparent', border: 0, textAlign: 'left', font: 'inherit', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' };
       return h('section', { ref, style: { ...cardStyle, overflow: 'visible' }, 'data-html-preview-id': previewId },
         h('style', null, css),
@@ -191,21 +260,25 @@ window.__ModuleLoader__.load({
             onBlur: event => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; } },
             h('summary', { 'aria-label': '导出选项', title: '导出选项', style: { listStyle: 'none', cursor: 'pointer', padding: '0 8px', fontSize: 22, lineHeight: '28px' } }, '⋯'),
             h('div', { style: { position: 'absolute', right: 0, top: '100%', zIndex: 10, minWidth: 150, borderRadius: 8, border: '1px solid currentColor', background: 'var(--dsw-alias-bg-base, Canvas)', color: 'var(--dsw-alias-text-primary, CanvasText)', padding: '4px 0' } },
-              h('button', { type: 'button', disabled: saving || !sessionId, style: itemStyle, onClick: () => save('html') }, '保存为 HTML'),
+              h('button', { type: 'button', disabled: saving || !sessionId || Boolean(svg?.error), style: itemStyle, onClick: () => save(isSvg ? 'svg' : 'html') }, isSvg ? '保存为 SVG' : '保存为 HTML'),
               h('button', { type: 'button', disabled: saving || !sessionId, style: itemStyle, onClick: () => save('png') }, '保存为 PNG')))),
         (notice || saving) && h('div', { role: 'status', style: { padding: '6px 10px', fontSize: 12, overflowWrap: 'anywhere' } }, saving ? '正在保存…' : notice),
-        h('iframe', { ref: frame, title, sandbox: 'allow-scripts allow-same-origin', src: frameSrc, style: { display: 'block', width: '100%', height: 420, border: 0, borderRadius: '0 0 10px 10px', background: '#fff' } }));
+        isSvg
+          ? svg.error
+            ? h('div', { role: 'alert', style: { padding: 16 } }, svg.error)
+            : h('img', { alt: title, src: svg.url, style: { display: 'block', width: '100%', height: 'auto', borderRadius: '0 0 10px 10px', background: '#fff' } })
+          : h('iframe', { ref: frame, title, sandbox: 'allow-scripts allow-same-origin', src: frameSrc, style: { display: 'block', width: '100%', height: 420, border: 0, borderRadius: '0 0 10px 10px', background: '#fff' } }));
     });
 
     const Preview = React.memo(function Preview({ turn, sessionId, saveHtml }) {
       const matched = extract({ turn });
-      return matched ? h(Card, { html: matched.html, title: matched.title || 'HTML 输出', sessionId, saveHtml }) : null;
+      return matched ? h(Card, { html: matched.html, kind: matched.kind, title: matched.title || (matched.kind === 'svg' ? 'SVG 图表' : 'HTML 输出'), sessionId, saveHtml }) : null;
     });
 
     return {
       inject: ['slots', 'remote', 'remote.commands'],
       apply(ctx) {
-        const saveHtml = (sessionId, input) => ctx.remote.commands.execute(sessionId, '/html-output-save ' + JSON.stringify(input), []);
+        const saveHtml = (sessionId, input) => ctx.remote.commands.execute(sessionId, (input.format === 'svg' ? '/svg-output-save ' : '/html-output-save ') + JSON.stringify(input), []);
         const ConnectedPreview = props => h(Preview, { ...props, saveHtml });
         ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
           name: 'conversation.chat.turnTail',

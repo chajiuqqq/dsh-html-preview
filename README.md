@@ -1,17 +1,18 @@
-# DSH HTML Preview
+# DSH SVG / HTML Preview
 
-DeepSeek Harness 聊天 HTML 预览插件。将助手回复中最后一个完整的 `html` 代码块显示为交互式卡片，并隐藏对应的源码代码块。
+DeepSeek Harness 聊天图表预览插件。直接展示助手回复中最后一个完整的 `svg` 或 `html` 代码块，并隐藏对应源码。
 
-已在 DSH `0.2.1-rc.5` 验证；其他版本需要核对 Cordis 服务和聊天插槽接口。
+默认引导模型用 Markdown 回答普通问题，用独立 SVG 绘制流程图、架构图等静态图表；仅在用户要求网页或交互 HTML 时生成完整 HTML。
+
+目标运行环境：DSH `0.2.1-rc.5`。HTML 预览和导出已人工验证；SVG 的代码块解析、后端保存和在线插件注册已验证，浏览器展示及 PNG 点击导出仍需人工验收。
 
 ## 功能
 
-- 在聊天回合末尾显示 HTML 预览，支持页面内 JavaScript。
-- 不重复展示被预览的 HTML 源码。
-- 卡片右上角 `⋯` 菜单提供 **保存为 HTML** 和 **保存为 PNG**。
-- 保存到点击时的当前会话工作目录，使用标题与 UUID 生成文件名，避免覆盖已有文件。
-- 显示保存进度、完整文件路径和失败原因。
-- Host 提供 `htmlOutputSaver` 服务、`/html-output-save` 命令和 `html_output_save` 工具，复用同一保存逻辑。
+- SVG 作为独立图片直接显示在聊天卡片中，宽度随聊天布局变化，高度保持原始比例；不需要 HTML 包装或固定高度 iframe。
+- SVG 菜单：**保存为 SVG**、**保存为 PNG**。
+- HTML 菜单：**保存为 HTML**、**保存为 PNG**，保留隔离的交互式网页预览。
+- 保存到点击时的当前会话工作目录，文件名带 UUID，避免覆盖已有文件。
+- 保存操作复用 Host 服务，同时向 UI 命令和 Agent 工具开放：`htmlOutputSaver` / `html_output_save`、`svgOutputSaver` / `svg_output_save`。
 
 ## 安装
 
@@ -25,28 +26,33 @@ git clone https://github.com/chajiuqqq/dsh-html-preview.git
 
 仓库包含已构建的 `client.js`；安装时无需手动构建。依赖由插件管理器处理。
 
-Bundle 会关闭旧的 `ui-html-output` 插件条目，并注册以下条目：
+Bundle 会关闭原有 `html-output` 的完整 HTML 输出提示词和旧的 `ui-html-output` 渲染器，并注册：
 
-- `ui-html-output-compat`：聊天预览卡片。
+- `svg-output`：Markdown / SVG 引导与 SVG 保存后端。
 - `html-output-save`：HTML / PNG 保存后端。
+- `ui-html-output-compat`：SVG / HTML 聊天预览。
 
-包名保留为 `@local/dsh-html-output-client-compat`，以兼容现有安装。
+包名保留为 `@local/dsh-html-output-client-compat`，以兼容现有安装。对已经安装的本地链接修改后，需要通过插件管理器重新加载 Bundle，并刷新聊天页面以加载新的客户端代码。
 
 ## 使用
 
-让助手返回完整的 HTML 代码块即可：
+让助手“用 SVG 画一个流程图”即可。无需调用工具来显示图表：
 
 ````markdown
-```html
-<!doctype html>
-<html lang="zh-CN">
-<head><meta charset="utf-8"><title>示例卡片</title></head>
-<body><h1>Hello DSH</h1><p>点击右上角 ⋯ 导出。</p></body>
-</html>
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120">
+  <title>示例流程</title>
+  <rect x="20" y="30" width="140" height="60" rx="12" fill="#e8eefb"/>
+  <path d="M170 60H220M210 50L220 60L210 70" fill="none" stroke="#52617b" stroke-width="2"/>
+  <rect x="240" y="30" width="140" height="60" rx="12" fill="#e6f3ed"/>
+  <g font-family="sans-serif" font-size="18" text-anchor="middle" fill="#223047">
+    <text x="90" y="67">输入</text><text x="310" y="67">结果</text>
+  </g>
+</svg>
 ```
 ````
 
-HTML 导出保留页面文档；PNG 导出使用卡片当前宽度和页面完整高度，通过内嵌的 html2canvas 渲染。
+使用原生 SVG 的形状、路径和文字，包含 `xmlns` 和 `viewBox`，避免脚本、`foreignObject` 和外部资源。无效 XML 会显示错误并保留源码，方便修正。纯 SVG 放在 `html` 围栏中也会识别为 SVG。
 
 ## 开发
 
@@ -59,25 +65,24 @@ npm test
 
 修改 `client-source.js` 后执行构建，不要直接修改生成的 `client.js`。提交时同时更新生成文件。
 
-主要文件：
-
-- `client-source.js`：预览、源码隐藏、导出菜单及浏览器 PNG 渲染。
+- `client-source.js`：代码块提取、预览、源码隐藏、菜单及浏览器 PNG 渲染。
 - `client.js`：内嵌 html2canvas 的构建产物，不依赖 CDN。
-- `save-host.js`：保存服务、命令和工具，遵循当前会话文件沙箱策略。
+- `save-host.js`：HTML / PNG 保存服务，遵循当前会话文件沙箱策略。
+- `svg-host.js`：SVG 优先提示词与 SVG 保存服务。
 - `build.js`：客户端打包脚本。
 - `cordis.patch.yml`：插件组合。
-- `client-regression.test.mjs`：保存接口响应解析的回归测试。
+- `client-regression.test.mjs`：代码块提取、保存参数、会话目录和接口响应解析的回归测试。
 
 ## 实现说明与限制
 
-- 预览使用独立不透明来源的 `data:` iframe，并设置 `allow-scripts allow-same-origin`。它允许 html2canvas 访问自己的临时子帧，同时保持与 DSH 主页面跨源。**不要将这个组合直接改成 `srcDoc` 或宿主来源的 Blob URL**。
-- PNG 请求通过 `postMessage` 传递，父页面校验消息来源窗口和请求编号。请求编号不依赖仅在安全上下文可用的 `crypto.randomUUID()`。
-- 保存接口正确解包 DSH RPC 的 `{ ok, value }` 返回值后，再读取 `value.result`。
-- HTML 内容最大 2 MiB。PNG 渲染限制为 2400 万像素和 20000 像素高度，并有 30 秒响应超时。
-- html2canvas 对部分复杂 CSS、跨域图片、视频和嵌入页面存在限制；导出结果不等同于浏览器原生截图。
+- SVG 使用 `data:image/svg+xml` 图片，不把生成内容注入主页面 DOM；浏览器图片模式不执行 SVG 脚本，也不加载外部资源。SVG 导出会补全尺寸和 `viewBox`；PNG 通过浏览器原生 Canvas 转换，宽度在 600–1600 像素之间，保持比例并使用白色背景。
+- HTML 使用独立不透明来源的 `data:` iframe，设置 `allow-scripts allow-same-origin`，使 html2canvas 能访问自己的临时子帧，同时保持与 DSH 主页面跨源。**不要直接改成 `srcDoc` 或宿主来源 Blob URL**。
+- HTML PNG 请求通过 `postMessage` 传递，父页面校验来源窗口和请求编号；保存接口先解包 RPC 的 `{ ok, value }`，再读取 `value.result`。
+- HTML 和 SVG 文本最大 2 MiB。PNG 限制为 2400 万像素和 20000 像素高度，并有 30 秒渲染超时。
+- html2canvas 对复杂 CSS、跨域图片、视频等存在限制；HTML 导出结果不等同于浏览器原生截图。
 - PNG 写入通过会话的 shell 沙箱执行，需要执行环境提供 `node` 命令。
-- 当前每个回合只预览最后一个完整 HTML 代码块；源码隐藏依赖当前 DSH 聊天 DOM 结构，升级 DSH 后应复核。
+- 当前每个回合只预览最后一个完整的 SVG / HTML 代码块。源码隐藏依赖当前 DSH 聊天 DOM 结构，升级 DSH 后应复核。
 
 ## 第三方许可
 
-PNG 渲染使用 [html2canvas](https://github.com/niklasvh/html2canvas) 1.4.1，遵循 MIT 许可证。许可证副本见 `html2canvas-LICENSE`。
+HTML 的 PNG 渲染使用 [html2canvas](https://github.com/niklasvh/html2canvas) 1.4.1，遵循 MIT 许可证。许可证副本见 `html2canvas-LICENSE`。
